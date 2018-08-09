@@ -8,6 +8,7 @@ static const std::string JOINT_STATE_REPLACE("{{JOINT_STATE_REPLACE}}");
 static const std::string SERVO_J_REPLACE("{{SERVO_J_REPLACE}}");
 static const std::string SERVER_IP_REPLACE("{{SERVER_IP_REPLACE}}");
 static const std::string SERVER_PORT_REPLACE("{{SERVER_PORT_REPLACE}}");
+static const std::string TRAJECTORY_REPLACE("{{TRAJECTORY_REPLACE}}");
 static const std::string POSITION_PROGRAM = R"(
 def driverProg():
 	MULT_jointstate = {{JOINT_STATE_REPLACE}}
@@ -65,6 +66,16 @@ def driverProg():
 end
 )";
 
+static const std::string TRAJECTORY_PROGRAM = R"(
+def driverProg():
+  socket_open("{{SERVER_IP_REPLACE}}", {{SERVER_PORT_REPLACE}})
+
+{{TRAJECTORY_REPLACE}}
+
+  socket_close()
+end
+)";
+
 TrajectoryFollower::TrajectoryFollower(URCommander &commander, std::string &reverse_ip, int reverse_port,
                                        bool version_3)
   : running_(false)
@@ -73,6 +84,8 @@ TrajectoryFollower::TrajectoryFollower(URCommander &commander, std::string &reve
   , servoj_time_(0.008)
   , servoj_lookahead_time_(0.03)
   , servoj_gain_(300.)
+  , reverse_ip_(reverse_ip)
+  , reverse_port_(reverse_port)
 {
   ros::param::get("~servoj_time", servoj_time_);
   ros::param::get("~servoj_lookahead_time", servoj_lookahead_time_);
@@ -90,12 +103,6 @@ TrajectoryFollower::TrajectoryFollower(URCommander &commander, std::string &reve
   res.replace(res.find(SERVER_IP_REPLACE), SERVER_IP_REPLACE.length(), reverse_ip);
   res.replace(res.find(SERVER_PORT_REPLACE), SERVER_PORT_REPLACE.length(), std::to_string(reverse_port));
   program_ = res;
-
-  if (!server_.bind())
-  {
-    LOG_ERROR("Failed to bind server, the port %d is likely already in use", reverse_port);
-    std::exit(-1);
-  }
 }
 
 bool TrajectoryFollower::start()
@@ -120,6 +127,80 @@ bool TrajectoryFollower::start()
   }
 
   LOG_DEBUG("Robot successfully connected");
+  return (running_ = true);
+}
+
+bool TrajectoryFollower::start(const std::vector<TrajectoryPoint> &trajectory, std::atomic<bool> &interrupt)
+{
+  using namespace std::chrono;
+  typedef duration<double> double_seconds;
+  typedef high_resolution_clock Clock;
+  typedef Clock::time_point Time;
+
+  std::string program(TRAJECTORY_PROGRAM);
+  program.replace(program.find(SERVER_IP_REPLACE), SERVER_IP_REPLACE.length(), reverse_ip_);
+  program.replace(program.find(SERVER_PORT_REPLACE), SERVER_PORT_REPLACE.length(), std::to_string(reverse_port_));
+
+  // Replace with joints
+  auto total_time = 0.0;
+  auto previous_point = trajectory[0];
+  auto blend_radius = 0.05;
+  auto deceleration_rad = 1.0;
+  std::ostringstream trajectory_str;
+  
+  for (auto i = 0; i < trajectory.size(); ++i)
+  {
+    auto point = trajectory[i];
+    if (i == 0)
+    {
+      auto duration = point.time_from_start;
+      auto duration_seconds = duration_cast<double_seconds>(duration).count();
+      auto p = point.positions;
+      trajectory_str << "  movej([" << p[0] << ", " << p[1] << ", "
+        << p[2] << ", " << p[3] << ", " << p[4] << ", " << p[5] << "], t="
+        << duration_seconds << ", r=" << blend_radius << ")" << '\n';
+      ROS_ERROR_STREAM(duration_seconds);
+      previous_point = point;
+      total_time += duration_seconds;
+    }
+    else if (i == (trajectory.size() - 1) || i == (trajectory.size() - 2))
+    {
+      auto duration = point.time_from_start - previous_point.time_from_start;
+      auto duration_seconds = duration_cast<double_seconds>(duration).count();
+      auto p = point.positions;
+      trajectory_str << "  movej([" << p[0] << ", " << p[1] << ", "
+        << p[2] << ", " << p[3] << ", " << p[4] << ", " << p[5] << "], t="
+        << duration_seconds << ", r=" << 0.0 << ")" << '\n';
+      ROS_ERROR_STREAM(duration_seconds);
+      previous_point = point;
+      total_time += duration_seconds;
+    }
+    else
+    {
+      auto duration = point.time_from_start - previous_point.time_from_start;
+      auto duration_seconds = duration_cast<double_seconds>(duration).count();
+      auto p = point.positions;
+      trajectory_str << "  movej([" << p[0] << ", " << p[1] << ", "
+        << p[2] << ", " << p[3] << ", " << p[4] << ", " << p[5] << "], t="
+        << duration_seconds << ", r=" << blend_radius << ")" << '\n';
+      ROS_ERROR_STREAM(duration_seconds);
+      previous_point = point;
+      total_time += duration_seconds;
+    }
+  }
+  trajectory_str << "  stopj(3.14)" << '\n';
+
+  program.replace(program.find(TRAJECTORY_REPLACE), TRAJECTORY_REPLACE.length(), trajectory_str.str());
+
+  ROS_ERROR_STREAM(program);
+
+  server_.bind();
+  commander_.uploadProg(program);
+  server_.accept();
+
+  ROS_ERROR_STREAM("Total Trajectory Time: " << total_time);
+  std::this_thread::sleep_for(std::chrono::milliseconds((int)((1.05 * total_time * 1000))));
+  
   return (running_ = true);
 }
 

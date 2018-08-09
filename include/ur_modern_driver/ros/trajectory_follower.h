@@ -35,6 +35,8 @@ private:
   std::array<double, 6> last_positions_;
   URCommander &commander_;
   URServer server_;
+  std::string reverse_ip_;
+  int reverse_port_;
 
   double servoj_time_, servoj_lookahead_time_, servoj_gain_;
   std::string program_;
@@ -54,6 +56,7 @@ public:
   TrajectoryFollower(URCommander &commander, std::string &reverse_ip, int reverse_port, bool version_3);
 
   bool start();
+  bool start(const std::vector<TrajectoryPoint> &trajectory, std::atomic<bool> &interrupt);
   bool execute(std::array<double, 6> &positions);
   bool execute(std::vector<TrajectoryPoint> &trajectory, std::atomic<bool> &interrupt);
   void stop();

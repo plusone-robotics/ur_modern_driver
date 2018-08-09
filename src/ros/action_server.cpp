@@ -307,11 +307,8 @@ void ActionServer::trajectoryThread()
 
     Result res;
 
-    if (follower_.start())
+    if (follower_.start(trajectory, interrupt_traj_))
     {
-      if (follower_.execute(trajectory, interrupt_traj_))
-      {
-        // interrupted goals must be handled by interrupt trigger
         if (!interrupt_traj_)
         {
           LOG_INFO("Trajectory executed successfully");
@@ -319,16 +316,7 @@ void ActionServer::trajectoryThread()
           curr_gh_.setSucceeded(res);
         }
         else
-          LOG_INFO("Trajectory interrupted");
-      }
-      else
-      {
-        LOG_INFO("Trajectory failed");
-        res.error_code = -100;
-        res.error_string = "Connection to robot was lost";
-        curr_gh_.setAborted(res, res.error_string);
-      }
-
+          LOG_INFO("Trajectory interrupted");      
       follower_.stop();
     }
     else
