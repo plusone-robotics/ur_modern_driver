@@ -144,7 +144,7 @@ bool TrajectoryFollower::start(const std::vector<TrajectoryPoint> &trajectory, s
   // Replace with joints
   auto total_time = 0.0;
   auto previous_point = trajectory[0];
-  auto blend_radius = 0.05;
+  auto blend_radius = 0.0; // 0.05
   auto deceleration_rad = 1.0;
   std::ostringstream trajectory_str;
   
@@ -199,6 +199,7 @@ bool TrajectoryFollower::start(const std::vector<TrajectoryPoint> &trajectory, s
   server_.accept();
 
   ROS_ERROR_STREAM("Total Trajectory Time: " << total_time);
+
   std::this_thread::sleep_for(std::chrono::milliseconds((int)((1.05 * total_time * 1000))));
   
   return (running_ = true);
