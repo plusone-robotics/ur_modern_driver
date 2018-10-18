@@ -1,0 +1,39 @@
+image: docker:git
+services:
+  - docker:dind
+variables:
+  ENV_IMAGE: $CI_REGISTRY_IMAGE:env-$CI_COMMIT_REF_SLUG
+  APPLICATION_IMAGE: $CI_REGISTRY_IMAGE:app-$CI_COMMIT_REF_SLUG
+stages:
+  - build
+
+build-env:
+  stage: build-env
+  script:
+    - docker pull $ENV_IMAGE || true
+    - docker build --cache-from $ENV_IMAGE -t env_image .
+    - docker tag env_image $ENV_IMAGE
+    - docker push $ENV_IMAGE
+  before_script:
+    - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
+
+build-app:
+  stage: build-app
+  script:
+    - docker run --name build-image -dit $ENV_IMAGE /bin/bash
+    - docker exec build-image /bin/bash -c 'mkdir -p /root/.ssh'
+    - docker cp $SHARED_PATH/.ssh/id_rsa build-image:/root/.ssh/id_rsa
+    - docker cp $CI_PROJECT_DIR build-image:/catkin_ws/src/
+    - docker exec build-image /bin/bash -c 'chmod 400 /root/.ssh/id_rsa && eval "$(ssh-agent -s)" && ssh-add /root/.ssh/id_rsa && ssh-keyscan -H 'gitlab.com' >> /root/.ssh/known_hosts && ssh -T git@gitlab.com'
+    - docker exec build-image /bin/bash -c 'wstool init && wstool merge ./bolles_ai/.rosinstall && wstool update'
+    - docker exec build-image /bin/bash -c 'apt-get update && cd .. && source /opt/ros/kinetic/setup.bash && rosdep install --from-paths src --ignore-src -r -y && rm -rf /var/lib/apt/lists/*'
+    - docker exec build-image /bin/bash -c 'cd .. && source /opt/ros/kinetic/setup.bash && catkin build'
+    - docker exec build-image /bin/bash -c 'rm /root/.ssh/known_hosts && rm /root/.ssh/id_rsa'
+    - docker commit build-image $APPLICATION_IMAGE
+    - docker push $APPLICATION_IMAGE
+  before_script:
+    - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
+    - mkdir -p ${SHARED_PATH}/.ssh
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' > ${SHARED_PATH}/.ssh/id_rsa
+  variables:
+    SHARED_PATH: /builds/shared/$CI_PROJECT_PATH

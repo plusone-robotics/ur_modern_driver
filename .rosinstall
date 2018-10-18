@@ -1,0 +1,4 @@
+- git:
+    local-name: universal_robot
+    uri: https://github.com/dniewinski/universal_robot.git
+    version: ur_e
