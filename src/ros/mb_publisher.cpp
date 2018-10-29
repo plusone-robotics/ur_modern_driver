@@ -32,7 +32,15 @@ void MBPublisher::publishRobotStatus(industrial_msgs::RobotStatus& status, const
   //data.programm_running would be true when using this driver to move the robot
   //but it would also be true when another programm is running that might not
   //in fact contain any movement commands
-  status.in_motion.val = industrial_msgs::TriState::UNKNOWN;
+  // TODO: this is a hack that temp addresses https://gitlab.com/plusone-robotics/msc/packing/issues/135
+  if (data.program_running)
+  {
+    status.in_motion.val = industrial_msgs::TriState::UNKNOWN;
+  }
+  else
+  {
+    status.in_motion.val = industrial_msgs::TriState::FALSE;
+  }
 
   //the error code, if any, is not transmitted by this protocol
   //it can and should be fetched seperately
