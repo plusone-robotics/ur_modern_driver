@@ -13,14 +13,7 @@
   <arg name="min_payload"  default="0.0"/>
   <arg name="max_payload"  default="3.0"/>
   <arg name="prefix" default="" />
-  <arg name="use_lowbandwidth_trajectory_follower" default="false"/>
-  <arg name="time_interval" default="0.008"/>
   <arg name="servoj_time" default="0.008" />
-  <arg name="servoj_time_waiting" default="0.001" />
-  <arg name="max_waiting_time" default="2.0" />
-  <arg name="servoj_gain" default="100." />
-  <arg name="servoj_lookahead_time" default="1." />
-  <arg name="max_joint_difference" default="0.01" />
   <arg name="base_frame" default="$(arg prefix)base" />
   <arg name="tool_frame" default="$(arg prefix)tool0_controller" />
   <arg name="shutdown_on_disconnect" default="true" />
