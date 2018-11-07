@@ -86,6 +86,7 @@ public:
       return std::unique_ptr<URCommander>(new URCommander_V3_3(stream));
   }
 
+
   std::unique_ptr<URParser<StatePacket>> getStateParser()
   {
     if (major_version_ == 1)
@@ -105,7 +106,7 @@ public:
     {
       return std::unique_ptr<URParser<StatePacket>>(new URStateParser_V3_5);
     }
-  }
+}
 
   std::unique_ptr<URParser<RTPacket>> getRTParser()
   {
@@ -122,10 +123,12 @@ public:
         return std::unique_ptr<URParser<RTPacket>>(new URRTStateParser_V3_0__1);
       else if (minor_version_ < 5)
         return std::unique_ptr<URParser<RTPacket>>(new URRTStateParser_V3_2__3);
+      else
+        return std::unique_ptr<URParser<RTPacket>>(new URRTStateParser_V3_5__5_1);
     }
     else
     {
       return std::unique_ptr<URParser<RTPacket>>(new URRTStateParser_V3_5__5_1);
     }
-  }
+}
 };
