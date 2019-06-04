@@ -39,6 +39,7 @@ private:
   int reverse_port_;
 
   double servoj_time_, servoj_lookahead_time_, servoj_gain_;
+  double max_acceleration_;
   std::string program_;
 
   template <typename T>
@@ -51,6 +52,9 @@ private:
 
   bool execute(std::array<double, 6> &positions, bool keep_alive);
   double interpolate(double t, double T, double p0_pos, double p1_pos, double p0_vel, double p1_vel);
+  bool computeVelocityAndAccel(double dphi, double dt,
+			       double max_vel, double max_accel,
+			       double& vel, double& accel);
 
 public:
   TrajectoryFollower(URCommander &commander, std::string &reverse_ip, int reverse_port, bool version_3);

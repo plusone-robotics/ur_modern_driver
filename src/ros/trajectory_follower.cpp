@@ -86,10 +86,12 @@ TrajectoryFollower::TrajectoryFollower(URCommander &commander, std::string &reve
   , servoj_gain_(300.)
   , reverse_ip_(reverse_ip)
   , reverse_port_(reverse_port)
+  , max_acceleration_(4.0 * M_PI)
 {
   ros::param::get("~servoj_time", servoj_time_);
   ros::param::get("~servoj_lookahead_time", servoj_lookahead_time_);
   ros::param::get("~servoj_gain", servoj_gain_);
+  ros::param::get("~max_acceleration", max_acceleration_); 
 
   std::string res(POSITION_PROGRAM);
   res.replace(res.find(JOINT_STATE_REPLACE), JOINT_STATE_REPLACE.length(), std::to_string(MULT_JOINTSTATE_));
@@ -130,6 +132,54 @@ bool TrajectoryFollower::start()
   return (running_ = true);
 }
 
+bool TrajectoryFollower::computeVelocityAndAccel(double dphi, double dt,
+						 double max_vel, double max_accel,
+						 double& vel, double& accel)
+{
+
+  if (dt < 1e-4)
+  {
+    // TODO: There may be a case where this calls for maximum effort, but in
+    //       many cases it may just be for two very closely spaced positions
+    vel = 1.0;
+    accel = 1.0;
+    return true;
+  }
+  // Compute velocity and acceleration for trapezoidal velocity profile which
+  // meets the target angular displacement, dphi (stop-start-stop), in the
+  // specified time, dt.
+  
+  const double min_accel = 1.0;
+  
+  // If acceleration limits aren't exceeded, use 10% accel/decel durations
+  accel = dphi / (0.09 * dt*dt);
+  if (accel > max_accel)
+  {
+    // if acceleration limit is exceeded, use the max accel
+    accel = max_accel;
+    if (accel - 4 * dphi / dt < 0)
+    {
+      // If the max accel is not sufficient to achieve the displacement set the
+      // acceleration and velocity to the max and return false
+      double min_req_accel = 4 * dphi / dt;
+      ROS_ERROR("Minimum acceleration required for move: %lf, current maximum "
+		"acceleration: %lf", min_req_accel, max_accel);
+      vel = max_vel;
+      return false;
+    }
+  }
+  else if (accel < min_accel)
+  {
+    // But don't use an accel less than a minimum
+    accel = min_accel;
+  }
+
+  // Compute the velocity for the constant velocity portion of the trapezoidal
+  // velocity profile.
+  vel = accel*dt/2.0 - std::sqrt(accel*accel*dt*dt/4.0 - accel*dphi);
+  return true;
+}
+
 bool TrajectoryFollower::start(const std::vector<TrajectoryPoint> &trajectory, std::atomic<bool> &interrupt)
 {
   using namespace std::chrono;
@@ -144,8 +194,11 @@ bool TrajectoryFollower::start(const std::vector<TrajectoryPoint> &trajectory, s
   // Replace with joints
   auto total_time = 0.0;
   auto previous_point = trajectory[0];
-  auto blend_radius = 0.0; // 0.05
+  auto blend_radius = 0.05; // in meters
   auto deceleration_rad = 1.0;
+
+  const double MAX_VELOCITY = M_PI;  // 180 deg/s (from the manual for e-series)
+
   std::ostringstream trajectory_str;
   
   for (auto i = 0; i < trajectory.size(); ++i)
@@ -157,20 +210,37 @@ bool TrajectoryFollower::start(const std::vector<TrajectoryPoint> &trajectory, s
       auto duration_seconds = duration_cast<double_seconds>(duration).count();
       auto p = point.positions;
       trajectory_str << "  movej([" << p[0] << ", " << p[1] << ", "
-        << p[2] << ", " << p[3] << ", " << p[4] << ", " << p[5] << "], t="
-        << duration_seconds << ", r=" << blend_radius << ")" << '\n';
+        << p[2] << ", " << p[3] << ", " << p[4] << ", " << p[5] << "], v="
+        << 1.0 << ", r=" << 0.0 << ")" << '\n';
       ROS_ERROR_STREAM(duration_seconds);
       previous_point = point;
       total_time += duration_seconds;
     }
-    else if (i == (trajectory.size() - 1) || i == (trajectory.size() - 2))
+    else if (i == (trajectory.size() - 1))
     {
       auto duration = point.time_from_start - previous_point.time_from_start;
-      auto duration_seconds = duration_cast<double_seconds>(duration).count();
+      auto duration_seconds = duration_cast<double_seconds>(duration).count(); 
       auto p = point.positions;
+
+      double v;
+      double a;
+      double dphi = 0;
+      auto p0 = trajectory[i-1].positions;
+      for (size_t j = 0; j < 6; ++j)
+      {
+	double da = std::abs(p[j] - p0[j]);
+	if (da > dphi)
+	{
+	  dphi = da;
+	}
+      }
+      
+      computeVelocityAndAccel(dphi, duration_seconds,
+			      MAX_VELOCITY, max_acceleration_, v, a);
+      
       trajectory_str << "  movej([" << p[0] << ", " << p[1] << ", "
-        << p[2] << ", " << p[3] << ", " << p[4] << ", " << p[5] << "], t="
-        << duration_seconds << ", r=" << 0.0 << ")" << '\n';
+        << p[2] << ", " << p[3] << ", " << p[4] << ", " << p[5] << "], a="
+	<< a << ", v=" << v << ", r=" << 0.0 << ")" << '\n';
       ROS_ERROR_STREAM(duration_seconds);
       previous_point = point;
       total_time += duration_seconds;
@@ -180,9 +250,27 @@ bool TrajectoryFollower::start(const std::vector<TrajectoryPoint> &trajectory, s
       auto duration = point.time_from_start - previous_point.time_from_start;
       auto duration_seconds = duration_cast<double_seconds>(duration).count();
       auto p = point.positions;
+
+      double v;
+      double a;
+      double dphi = 0;
+      auto p0 = trajectory[i-1].positions;
+      for (size_t j = 0; j < 6; ++j)
+      {
+	double da = std::abs(p[j] - p0[j]);
+	if (da > dphi)
+	{
+	  dphi = da;
+	}
+      }
+      
+      computeVelocityAndAccel(dphi, duration_seconds,
+			      MAX_VELOCITY, max_acceleration_, v, a);
+      
       trajectory_str << "  movej([" << p[0] << ", " << p[1] << ", "
-        << p[2] << ", " << p[3] << ", " << p[4] << ", " << p[5] << "], t="
-        << duration_seconds << ", r=" << blend_radius << ")" << '\n';
+        << p[2] << ", " << p[3] << ", " << p[4] << ", " << p[5] << "], a="
+	<< a << ", v=" << v << ", r=" << blend_radius << ")" << '\n';
+
       ROS_ERROR_STREAM(duration_seconds);
       previous_point = point;
       total_time += duration_seconds;
