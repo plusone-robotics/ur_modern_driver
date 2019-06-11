@@ -60,7 +60,8 @@ public:
   TrajectoryFollower(URCommander &commander, std::string &reverse_ip, int reverse_port, bool version_3);
 
   bool start();
-  bool start(const std::vector<TrajectoryPoint> &trajectory, std::atomic<bool> &interrupt);
+  bool startSmoothTrajectory(const std::vector<TrajectoryPoint> &trajectory, std::atomic<bool> &interrupt);
+    bool startTimedTrajectory(const std::vector<TrajectoryPoint> &trajectory, std::atomic<bool> &interrupt);
   bool execute(std::array<double, 6> &positions);
   bool execute(std::vector<TrajectoryPoint> &trajectory, std::atomic<bool> &interrupt);
   void stop();

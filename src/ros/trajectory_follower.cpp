@@ -180,8 +180,9 @@ bool TrajectoryFollower::computeVelocityAndAccel(double dphi, double dt,
   return true;
 }
 
-bool TrajectoryFollower::start(const std::vector<TrajectoryPoint> &trajectory, std::atomic<bool> &interrupt)
+bool TrajectoryFollower::startSmoothTrajectory(const std::vector<TrajectoryPoint> &trajectory, std::atomic<bool> &interrupt)
 {
+  // TODO: interrupt doesn't appear to be used here
   using namespace std::chrono;
   typedef duration<double> double_seconds;
   typedef high_resolution_clock Clock;
@@ -288,10 +289,90 @@ bool TrajectoryFollower::start(const std::vector<TrajectoryPoint> &trajectory, s
 
   ROS_ERROR_STREAM("Total Trajectory Time: " << total_time);
 
+  // We will return immediately and watch for the completion of the trajectory
+  // in the calling function
+  // std::this_thread::sleep_for(std::chrono::milliseconds((int)((1.05 * total_time * 1000))));
+  
+  return (running_ = true);
+}
+
+
+bool TrajectoryFollower::startTimedTrajectory(const std::vector<TrajectoryPoint> &trajectory, std::atomic<bool> &interrupt)
+{
+  // TODO: interrupt doesn't appear to be used here
+  using namespace std::chrono;
+  typedef duration<double> double_seconds;
+  typedef high_resolution_clock Clock;
+  typedef Clock::time_point Time;
+
+  std::string program(TRAJECTORY_PROGRAM);
+  program.replace(program.find(SERVER_IP_REPLACE), SERVER_IP_REPLACE.length(), reverse_ip_);
+  program.replace(program.find(SERVER_PORT_REPLACE), SERVER_PORT_REPLACE.length(), std::to_string(reverse_port_));
+
+  // Replace with joints
+  auto total_time = 0.0;
+  auto previous_point = trajectory[0];
+  auto blend_radius = 0.0; // 0.05
+  auto deceleration_rad = 1.0;
+  std::ostringstream trajectory_str;
+  
+  for (auto i = 0; i < trajectory.size(); ++i)
+  {
+    auto point = trajectory[i];
+    if (i == 0)
+    {
+      auto duration = point.time_from_start;
+      auto duration_seconds = duration_cast<double_seconds>(duration).count();
+      auto p = point.positions;
+      trajectory_str << "  movej([" << p[0] << ", " << p[1] << ", "
+        << p[2] << ", " << p[3] << ", " << p[4] << ", " << p[5] << "], t="
+        << duration_seconds << ", r=" << blend_radius << ")" << '\n';
+      ROS_ERROR_STREAM(duration_seconds);
+      previous_point = point;
+      total_time += duration_seconds;
+    }
+    else if (i == (trajectory.size() - 1) || i == (trajectory.size() - 2))
+    {
+      auto duration = point.time_from_start - previous_point.time_from_start;
+      auto duration_seconds = duration_cast<double_seconds>(duration).count();
+      auto p = point.positions;
+      trajectory_str << "  movej([" << p[0] << ", " << p[1] << ", "
+        << p[2] << ", " << p[3] << ", " << p[4] << ", " << p[5] << "], t="
+        << duration_seconds << ", r=" << 0.0 << ")" << '\n';
+      ROS_ERROR_STREAM(duration_seconds);
+      previous_point = point;
+      total_time += duration_seconds;
+    }
+    else
+    {
+      auto duration = point.time_from_start - previous_point.time_from_start;
+      auto duration_seconds = duration_cast<double_seconds>(duration).count();
+      auto p = point.positions;
+      trajectory_str << "  movej([" << p[0] << ", " << p[1] << ", "
+        << p[2] << ", " << p[3] << ", " << p[4] << ", " << p[5] << "], t="
+        << duration_seconds << ", r=" << blend_radius << ")" << '\n';
+      ROS_ERROR_STREAM(duration_seconds);
+      previous_point = point;
+      total_time += duration_seconds;
+    }
+  }
+  trajectory_str << "  stopj(3.14)" << '\n';
+
+  program.replace(program.find(TRAJECTORY_REPLACE), TRAJECTORY_REPLACE.length(), trajectory_str.str());
+
+  ROS_ERROR_STREAM(program);
+
+  server_.bind();
+  commander_.uploadProg(program);
+  server_.accept();
+
+  ROS_ERROR_STREAM("Total Trajectory Time: " << total_time);
+
   std::this_thread::sleep_for(std::chrono::milliseconds((int)((1.05 * total_time * 1000))));
   
   return (running_ = true);
 }
+
 
 bool TrajectoryFollower::execute(std::array<double, 6> &positions, bool keep_alive)
 {
