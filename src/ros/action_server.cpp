@@ -15,12 +15,21 @@ ActionServer::ActionServer(TrajectoryFollower& follower, std::vector<std::string
   , use_smooth_trajectory_(true)
 {
 
-  ros::NodeHandle pnh("~");
-  pnh.param("use_smooth_trajectory", use_smooth_trajectory_, use_smooth_trajectory_);
 }
 
 void ActionServer::start()
 {
+  ros::NodeHandle pnh("~");
+  pnh.param("use_smooth_trajectory", use_smooth_trajectory_, use_smooth_trajectory_);
+  if (use_smooth_trajectory_)
+  {
+    LOG_INFO("Robot will execute smooth trajectories.");
+  }
+  else
+  {
+    LOG_WARN("Robot will stop at each trajectory point.");
+  }
+
   if (running_)
     return;
 
@@ -107,6 +116,9 @@ void ActionServer::onCancel(GoalHandle gh)
   // wait for goal to be interrupted
   std::lock_guard<std::mutex> lock(tj_mutex_);
 
+  LOG_WARN("Trajectory has been canceled by client. Trajectory execution may "
+           "have timed out. Check to make sure that the speed slider is set "
+           "to 100%% on the pendant.");
   Result res;
   res.error_code = -100;
   res.error_string = "Goal cancelled by client";
@@ -320,12 +332,18 @@ void ActionServer::trajectoryThread()
     {
       follower_.startSmoothTrajectory(trajectory, interrupt_traj_);
       // Wait until the trajectory completes or times out.
-      // t is the total time, so use 1.25*t as the timout
-      ros::Time timeout = ros::Time::now() + ros::Duration(t * 1.25);
+      // t is the total time, so use 1.5*t as the timeout. The action client
+      // can enforce a shorter timeout if necessary.
+      double timeout_duration = t * 1.5;
+      ros::Time timeout = ros::Time::now() + ros::Duration(timeout_duration);
       bool timed_out = true;
+      // Don't start checking immediately (in case the trajectory ends at the 
+      // start location), but also don't wait too long so that the trajectory
+      // can be pre-empted as soon as necessary.
+      ros::Duration(t * 0.1).sleep();
       while (ros::Time::now() < timeout || inMotion())
       {
-        if (reachedGoal(trajectory.back()))
+        if (reachedGoal(trajectory.back()) && !inMotion())
         {
           timed_out = false;
 	  LOG_INFO("Trajectory executed successfully");
@@ -336,7 +354,8 @@ void ActionServer::trajectoryThread()
 
         if (interrupt_traj_)
         {
-          LOG_INFO("Trajectory interrupted");
+          LOG_WARN("Trajectory interrupted");
+          timed_out = false;
           break;
         }
         usleep(1000);
@@ -385,15 +404,16 @@ void ActionServer::trajectoryThread()
 
 bool ActionServer::reachedGoal(const TrajectoryPoint& goal_point)
 {
-  const double tolerance = 0.005;
+  // Pick a smaller tolerance than we're likely to use at a higher level
+  const double tolerance = 0.0025;
   // Check to see if the joint angles are close to the goal
   for (size_t i = 0; i < q_actual_.size(); ++i)
+  {
+    if (std::abs(q_actual_[i] - goal_point.positions[i]) > tolerance)
     {
-      if (std::abs(q_actual_[i] - goal_point.positions[i]) > tolerance)
-	{
-	  return false;
-	}
+      return false;
     }
+  }
   return true;
 }
 
@@ -402,15 +422,15 @@ bool ActionServer::inMotion()
 {
   // Check the joint velocities to see whether the robot is still in motion
   for (auto joint_speed : qd_actual_)
+  {
+    // TODO: The threshold value here is just a guess. It should be replaced
+    //       with a more realistic value based on the specs/performance of
+    //       the robot.
+    if (std::abs(joint_speed) > 0.01)
     {
-      // TODO: The threshold value here is just a guess. It should be replaced
-      //       with a more realistic value based on the specs/performance of
-      //       the robot.
-      if (std::abs(joint_speed) > 0.01)
-	{
-	  return true;
-	}
+      return true;
     }
+  }
   return false;
 }
 

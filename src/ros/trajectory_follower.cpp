@@ -81,11 +81,11 @@ TrajectoryFollower::TrajectoryFollower(URCommander &commander, std::string &reve
   : running_(false)
   , commander_(commander)
   , server_(reverse_port)
+  , reverse_ip_(reverse_ip)
+  , reverse_port_(reverse_port)
   , servoj_time_(0.008)
   , servoj_lookahead_time_(0.03)
   , servoj_gain_(300.)
-  , reverse_ip_(reverse_ip)
-  , reverse_port_(reverse_port)
   , max_acceleration_(4.0 * M_PI)
 {
   ros::param::get("~servoj_time", servoj_time_);
@@ -185,8 +185,6 @@ bool TrajectoryFollower::startSmoothTrajectory(const std::vector<TrajectoryPoint
   // TODO: interrupt doesn't appear to be used here
   using namespace std::chrono;
   typedef duration<double> double_seconds;
-  typedef high_resolution_clock Clock;
-  typedef Clock::time_point Time;
 
   std::string program(TRAJECTORY_PROGRAM);
   program.replace(program.find(SERVER_IP_REPLACE), SERVER_IP_REPLACE.length(), reverse_ip_);
@@ -196,13 +194,12 @@ bool TrajectoryFollower::startSmoothTrajectory(const std::vector<TrajectoryPoint
   auto total_time = 0.0;
   auto previous_point = trajectory[0];
   auto blend_radius = 0.05; // in meters
-  auto deceleration_rad = 1.0;
 
   const double MAX_VELOCITY = M_PI;  // 180 deg/s (from the manual for e-series)
 
   std::ostringstream trajectory_str;
   
-  for (auto i = 0; i < trajectory.size(); ++i)
+  for (size_t i = 0; i < trajectory.size(); ++i)
   {
     auto point = trajectory[i];
     if (i == 0)
@@ -213,7 +210,6 @@ bool TrajectoryFollower::startSmoothTrajectory(const std::vector<TrajectoryPoint
       trajectory_str << "  movej([" << p[0] << ", " << p[1] << ", "
         << p[2] << ", " << p[3] << ", " << p[4] << ", " << p[5] << "], v="
         << 1.0 << ", r=" << 0.0 << ")" << '\n';
-      ROS_ERROR_STREAM(duration_seconds);
       previous_point = point;
       total_time += duration_seconds;
     }
@@ -242,7 +238,6 @@ bool TrajectoryFollower::startSmoothTrajectory(const std::vector<TrajectoryPoint
       trajectory_str << "  movej([" << p[0] << ", " << p[1] << ", "
         << p[2] << ", " << p[3] << ", " << p[4] << ", " << p[5] << "], a="
 	<< a << ", v=" << v << ", r=" << 0.0 << ")" << '\n';
-      ROS_ERROR_STREAM(duration_seconds);
       previous_point = point;
       total_time += duration_seconds;
     }
@@ -272,7 +267,6 @@ bool TrajectoryFollower::startSmoothTrajectory(const std::vector<TrajectoryPoint
         << p[2] << ", " << p[3] << ", " << p[4] << ", " << p[5] << "], a="
 	<< a << ", v=" << v << ", r=" << blend_radius << ")" << '\n';
 
-      ROS_ERROR_STREAM(duration_seconds);
       previous_point = point;
       total_time += duration_seconds;
     }
@@ -281,13 +275,16 @@ bool TrajectoryFollower::startSmoothTrajectory(const std::vector<TrajectoryPoint
 
   program.replace(program.find(TRAJECTORY_REPLACE), TRAJECTORY_REPLACE.length(), trajectory_str.str());
 
-  ROS_ERROR_STREAM(program);
+  ROS_INFO_STREAM(program);
 
   server_.bind();
   commander_.uploadProg(program);
+  // The following server_.accept() is not strictly necessary, but without it
+  // the robot pauses for a noticeable amount of time before executing the 
+  // trajectory. With this, it executes immediately.
   server_.accept();
 
-  ROS_ERROR_STREAM("Total Trajectory Time: " << total_time);
+  ROS_INFO_STREAM("Total Trajectory Time: " << total_time);
 
   // We will return immediately and watch for the completion of the trajectory
   // in the calling function
@@ -302,8 +299,6 @@ bool TrajectoryFollower::startTimedTrajectory(const std::vector<TrajectoryPoint>
   // TODO: interrupt doesn't appear to be used here
   using namespace std::chrono;
   typedef duration<double> double_seconds;
-  typedef high_resolution_clock Clock;
-  typedef Clock::time_point Time;
 
   std::string program(TRAJECTORY_PROGRAM);
   program.replace(program.find(SERVER_IP_REPLACE), SERVER_IP_REPLACE.length(), reverse_ip_);
@@ -312,11 +307,10 @@ bool TrajectoryFollower::startTimedTrajectory(const std::vector<TrajectoryPoint>
   // Replace with joints
   auto total_time = 0.0;
   auto previous_point = trajectory[0];
-  auto blend_radius = 0.0; // 0.05
-  auto deceleration_rad = 1.0;
+  auto blend_radius = 0.0;  // blend_radius doesn't do anything in a timed trajectory
   std::ostringstream trajectory_str;
   
-  for (auto i = 0; i < trajectory.size(); ++i)
+  for (size_t i = 0; i < trajectory.size(); ++i)
   {
     auto point = trajectory[i];
     if (i == 0)
