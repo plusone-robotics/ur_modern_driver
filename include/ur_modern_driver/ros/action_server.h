@@ -43,6 +43,7 @@ private:
 
   RobotState state_;
   bool use_smooth_trajectory_;
+  bool kill_on_hang_;
   std::array<double, 6> q_actual_, qd_actual_;
 
   void onGoal(GoalHandle gh);

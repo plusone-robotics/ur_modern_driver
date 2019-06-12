@@ -13,6 +13,7 @@ ActionServer::ActionServer(TrajectoryFollower& follower, std::vector<std::string
   , follower_(follower)
   , state_(RobotState::Error)
   , use_smooth_trajectory_(true)
+  , kill_on_hang_(true)
 {
 
 }
@@ -21,6 +22,7 @@ void ActionServer::start()
 {
   ros::NodeHandle pnh("~");
   pnh.param("use_smooth_trajectory", use_smooth_trajectory_, use_smooth_trajectory_);
+  pnh.param("kill_on_hang", kill_on_hang_, kill_on_hang_);
   if (use_smooth_trajectory_)
   {
     LOG_INFO("Robot will execute smooth trajectories.");
@@ -330,7 +332,24 @@ void ActionServer::trajectoryThread()
 
     if (use_smooth_trajectory_)
     {
-      follower_.startSmoothTrajectory(trajectory, interrupt_traj_);
+      if (!follower_.startSmoothTrajectory(trajectory))
+      {
+	LOG_ERROR("Robot has hung.");
+	res.error_code = -100;
+	res.error_string = "Robot has hung. ";
+	curr_gh_.setAborted(res, res.error_string);	
+
+        if (kill_on_hang_)
+        {
+          LOG_ERROR("Preparing to kill the robot driver. Consider configuring "
+		    "the driver to respawn using the the appropriate "
+		    "launch-prefix.");
+
+          ros::Duration(0.25).sleep();
+          exit(0);
+        }
+      }
+      
       // Wait until the trajectory completes or times out.
       // t is the total time, so use 1.5*t as the timeout. The action client
       // can enforce a shorter timeout if necessary.
@@ -374,7 +393,7 @@ void ActionServer::trajectoryThread()
     }
     else
     {
-      if (follower_.startTimedTrajectory(trajectory, interrupt_traj_))
+      if (follower_.startTimedTrajectory(trajectory))
       {
         if (!interrupt_traj_)
         {
@@ -390,10 +409,20 @@ void ActionServer::trajectoryThread()
       }
       else
       {
-	LOG_ERROR("Failed to start trajectory follower!");
+	LOG_ERROR("Robot has hung.");
 	res.error_code = -100;
-	res.error_string = "Robot connection could not be established";
-	curr_gh_.setAborted(res, res.error_string);
+	res.error_string = "Robot has hung. ";
+	curr_gh_.setAborted(res, res.error_string);	
+
+        if (kill_on_hang_)
+        {
+          LOG_ERROR("Preparing to kill the robot driver. Consider configuring "
+		    "the driver to respawn using the the appropriate "
+		    "launch-prefix.");
+
+          ros::Duration(0.25).sleep();
+          exit(0);
+        }
       }
       
       has_goal_ = false;

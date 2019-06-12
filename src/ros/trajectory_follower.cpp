@@ -180,9 +180,8 @@ bool TrajectoryFollower::computeVelocityAndAccel(double dphi, double dt,
   return true;
 }
 
-bool TrajectoryFollower::startSmoothTrajectory(const std::vector<TrajectoryPoint> &trajectory, std::atomic<bool> &interrupt)
+bool TrajectoryFollower::startSmoothTrajectory(const std::vector<TrajectoryPoint> &trajectory)
 {
-  // TODO: interrupt doesn't appear to be used here
   using namespace std::chrono;
   typedef duration<double> double_seconds;
 
@@ -273,30 +272,65 @@ bool TrajectoryFollower::startSmoothTrajectory(const std::vector<TrajectoryPoint
   }
   trajectory_str << "  stopj(3.14)" << '\n';
 
-  program.replace(program.find(TRAJECTORY_REPLACE), TRAJECTORY_REPLACE.length(), trajectory_str.str());
+  program.replace(
+    program.find(TRAJECTORY_REPLACE),
+    TRAJECTORY_REPLACE.length(),
+    trajectory_str.str());
 
   ROS_INFO_STREAM(program);
 
   server_.bind();
+
   commander_.uploadProg(program);
+
+  // Using a thread for the server accept() allows us to timeout the
+  // connection if it is hung, without changing the approach to use select()
+  // or poll().
+  timeout_canceled_ = false;
+  server_thread_ = std::thread(&TrajectoryFollower::serverThread, this);
+
+  ROS_INFO_STREAM("Total Trajectory Time: " << total_time);
+
+  // Check for a timeout on the server connection. The timeout will be canceled
+  // immediately if the connection can be made. The connection will hang if the
+  // robot is in local/pendant control mode.
+  ros::Time timeout = ros::Time::now() + ros::Duration(1.0);
+  while (ros::Time::now() < timeout)
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (timeout_canceled_)
+    {
+      break;
+    }
+  }
+
+  // The trajectory process is locked
+  if (!timeout_canceled_)
+  {
+    ROS_ERROR("Trajectory execution process has hung.");
+    return false;
+  }
+  
+  return (running_ = true);
+}
+
+void TrajectoryFollower::serverThread()
+{
   // The following server_.accept() is not strictly necessary, but without it
   // the robot pauses for a noticeable amount of time before executing the 
   // trajectory. With this, it executes immediately.
   server_.accept();
 
-  ROS_INFO_STREAM("Total Trajectory Time: " << total_time);
-
-  // We will return immediately and watch for the completion of the trajectory
-  // in the calling function
-  // std::this_thread::sleep_for(std::chrono::milliseconds((int)((1.05 * total_time * 1000))));
-  
-  return (running_ = true);
+  // If accept() returns, then we can just return, but first make sure that the
+  // timeout has been canceled.
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    timeout_canceled_ = true;
+  }
 }
 
-
-bool TrajectoryFollower::startTimedTrajectory(const std::vector<TrajectoryPoint> &trajectory, std::atomic<bool> &interrupt)
+bool TrajectoryFollower::startTimedTrajectory(const std::vector<TrajectoryPoint> &trajectory)
 {
-  // TODO: interrupt doesn't appear to be used here
   using namespace std::chrono;
   typedef duration<double> double_seconds;
 
@@ -352,17 +386,46 @@ bool TrajectoryFollower::startTimedTrajectory(const std::vector<TrajectoryPoint>
   }
   trajectory_str << "  stopj(3.14)" << '\n';
 
-  program.replace(program.find(TRAJECTORY_REPLACE), TRAJECTORY_REPLACE.length(), trajectory_str.str());
+  program.replace(
+    program.find(TRAJECTORY_REPLACE),
+    TRAJECTORY_REPLACE.length(),
+    trajectory_str.str());
 
-  ROS_ERROR_STREAM(program);
+  ROS_INFO_STREAM(program);
 
   server_.bind();
+
   commander_.uploadProg(program);
-  server_.accept();
 
-  ROS_ERROR_STREAM("Total Trajectory Time: " << total_time);
+  // Using a thread for the server accept() allows us to timeout the
+  // connection if it is hung, without changing the approach to use select()
+  // or poll().
+  timeout_canceled_ = false;
+  server_thread_ = std::thread(&TrajectoryFollower::serverThread, this);
 
-  std::this_thread::sleep_for(std::chrono::milliseconds((int)((1.05 * total_time * 1000))));
+  ROS_INFO_STREAM("Total Trajectory Time: " << total_time);
+
+  // Check for a timeout on the server connection. The timeout will be canceled
+  // immediately if the connection can be made. The connection will hang if the
+  // robot is in local/pendant control mode.
+  ros::Time timeout = ros::Time::now() + ros::Duration(1.0);
+  while (ros::Time::now() < timeout)
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (timeout_canceled_)
+    {
+      break;
+    }
+  }
+
+  // The trajectory process is locked
+  if (!timeout_canceled_)
+  {
+    ROS_ERROR("Trajectory execution process has hung.");
+    return false;
+  }
+  
+  ros::Duration(total_time * 1.05).sleep();
   
   return (running_ = true);
 }
