@@ -300,8 +300,10 @@ bool TrajectoryFollower::startSmoothTrajectory(const std::vector<TrajectoryPoint
     std::lock_guard<std::mutex> lock(mutex_);
     if (timeout_canceled_)
     {
+      server_thread_.join();
       break;
     }
+    usleep(10);
   }
 
   // The trajectory process is locked
@@ -320,7 +322,6 @@ void TrajectoryFollower::serverThread()
   // the robot pauses for a noticeable amount of time before executing the 
   // trajectory. With this, it executes immediately.
   server_.accept();
-
   // If accept() returns, then we can just return, but first make sure that the
   // timeout has been canceled.
   {
