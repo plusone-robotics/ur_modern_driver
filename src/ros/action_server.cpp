@@ -334,16 +334,15 @@ void ActionServer::trajectoryThread()
     {
       if (!follower_.startSmoothTrajectory(trajectory))
       {
-	LOG_ERROR("Robot has hung.");
+	LOG_WARN("Robot has hung.");
 	res.error_code = -100;
 	res.error_string = "Robot has hung. ";
 	curr_gh_.setAborted(res, res.error_string);	
 
         if (kill_on_hang_)
         {
-          LOG_ERROR("Preparing to kill the robot driver. Consider configuring "
-		    "the driver to respawn using the the appropriate "
-		    "launch-prefix.");
+          LOG_ERROR("Preparing to kill the robot driver. Note that the driver "
+                    "can recover if it is configured to automatically respawn.");
 
           ros::Duration(0.25).sleep();
           exit(0);
@@ -409,16 +408,15 @@ void ActionServer::trajectoryThread()
       }
       else
       {
-	LOG_ERROR("Robot has hung.");
-	res.error_code = -100;
-	res.error_string = "Robot has hung. ";
-	curr_gh_.setAborted(res, res.error_string);	
-
+        LOG_WARN("Robot has hung.");
+        res.error_code = -100;
+        res.error_string = "Robot has hung. ";
+        curr_gh_.setAborted(res, res.error_string);	
+        
         if (kill_on_hang_)
         {
-          LOG_ERROR("Preparing to kill the robot driver. Consider configuring "
-		    "the driver to respawn using the the appropriate "
-		    "launch-prefix.");
+          LOG_ERROR("Preparing to kill the robot driver. Note that the driver "
+                    "can recover if it is configured to automatically respawn.");
 
           ros::Duration(0.25).sleep();
           exit(0);

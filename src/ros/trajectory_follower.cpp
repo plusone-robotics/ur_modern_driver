@@ -415,8 +415,10 @@ bool TrajectoryFollower::startTimedTrajectory(const std::vector<TrajectoryPoint>
     std::lock_guard<std::mutex> lock(mutex_);
     if (timeout_canceled_)
     {
+      server_thread_.join();
       break;
     }
+    usleep(10);
   }
 
   // The trajectory process is locked
