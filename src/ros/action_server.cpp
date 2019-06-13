@@ -12,11 +12,26 @@ ActionServer::ActionServer(TrajectoryFollower& follower, std::vector<std::string
   , running_(false)
   , follower_(follower)
   , state_(RobotState::Error)
+  , use_smooth_trajectory_(true)
+  , kill_on_hang_(true)
 {
+
 }
 
 void ActionServer::start()
 {
+  ros::NodeHandle pnh("~");
+  pnh.param("use_smooth_trajectory", use_smooth_trajectory_, use_smooth_trajectory_);
+  pnh.param("kill_on_hang", kill_on_hang_, kill_on_hang_);
+  if (use_smooth_trajectory_)
+  {
+    LOG_INFO("Robot will execute smooth trajectories.");
+  }
+  else
+  {
+    LOG_WARN("Robot will stop at each trajectory point.");
+  }
+
   if (running_)
     return;
 
@@ -103,6 +118,9 @@ void ActionServer::onCancel(GoalHandle gh)
   // wait for goal to be interrupted
   std::lock_guard<std::mutex> lock(tj_mutex_);
 
+  LOG_WARN("Trajectory has been canceled by client. Trajectory execution may "
+           "have timed out. Check to make sure that the speed slider is set "
+           "to 100%% on the pendant.");
   Result res;
   res.error_code = -100;
   res.error_string = "Goal cancelled by client";
@@ -267,7 +285,7 @@ void ActionServer::trajectoryThread()
     std::unique_lock<std::mutex> lk(tj_mutex_);
     if (!tj_cv_.wait_for(lk, std::chrono::milliseconds(100), [&] { return running_ && has_goal_; }))
       continue;
-
+  
     LOG_INFO("Trajectory received and accepted");
     curr_gh_.setAccepted();
 
@@ -305,33 +323,141 @@ void ActionServer::trajectoryThread()
     }
 
     double t =
-        std::chrono::duration_cast<std::chrono::duration<double>>(trajectory[trajectory.size() - 1].time_from_start)
-            .count();
-    LOG_INFO("Executing trajectory with %zu points and duration of %4.3fs", trajectory.size(), t);
+      std::chrono::duration_cast<std::chrono::duration<double>>(
+        trajectory[trajectory.size() - 1].time_from_start).count();
+    LOG_INFO("Executing trajectory with %zu points and duration of %4.3fs",
+             trajectory.size(), t);
 
     Result res;
 
-    if (follower_.start(trajectory, interrupt_traj_))
+    if (use_smooth_trajectory_)
     {
-        if (!interrupt_traj_)
+      if (!follower_.startSmoothTrajectory(trajectory))
+      {
+	LOG_WARN("Robot has hung.");
+	res.error_code = -100;
+	res.error_string = "Robot has hung. ";
+	curr_gh_.setAborted(res, res.error_string);	
+
+        if (kill_on_hang_)
         {
-          LOG_INFO("Trajectory executed successfully");
-          res.error_code = Result::SUCCESSFUL;
-          curr_gh_.setSucceeded(res);
+          LOG_ERROR("Preparing to kill the robot driver. Note that the driver "
+                    "can recover if it is configured to automatically respawn.");
+
+          ros::Duration(0.25).sleep();
+          exit(0);
         }
-        else
-          LOG_INFO("Trajectory interrupted");      
+      }
+      
+      // Wait until the trajectory completes or times out.
+      // t is the total time, so use 1.5*t as the timeout. The action client
+      // can enforce a shorter timeout if necessary.
+      double timeout_duration = t * 1.5;
+      ros::Time timeout = ros::Time::now() + ros::Duration(timeout_duration);
+      bool timed_out = true;
+      // Don't start checking immediately (in case the trajectory ends at the 
+      // start location), but also don't wait too long so that the trajectory
+      // can be pre-empted as soon as necessary.
+      ros::Duration(t * 0.1).sleep();
+      while (ros::Time::now() < timeout || inMotion())
+      {
+        if (reachedGoal(trajectory.back()) && !inMotion())
+        {
+          timed_out = false;
+	  LOG_INFO("Trajectory executed successfully");
+	  res.error_code = Result::SUCCESSFUL;
+	  curr_gh_.setSucceeded(res);
+          break;
+        }
+
+        if (interrupt_traj_)
+        {
+          LOG_WARN("Trajectory interrupted");
+          timed_out = false;
+          break;
+        }
+        usleep(1000);
+      }
+
+      if ( timed_out )
+      {
+	LOG_ERROR("Trajectory timed out or failed to reach goal!");
+	res.error_code = -100;
+	res.error_string = "Robot motion timed out or failed to reach goal.";
+	curr_gh_.setAborted(res, res.error_string);	
+      }
       follower_.stop();
+      has_goal_ = false;
+      lk.unlock();
     }
     else
     {
-      LOG_ERROR("Failed to start trajectory follower!");
-      res.error_code = -100;
-      res.error_string = "Robot connection could not be established";
-      curr_gh_.setAborted(res, res.error_string);
-    }
+      if (follower_.startTimedTrajectory(trajectory))
+      {
+        if (!interrupt_traj_)
+        {
+	  LOG_INFO("Trajectory executed successfully");
+	  res.error_code = Result::SUCCESSFUL;
+	  curr_gh_.setSucceeded(res);
+	}
+	else
+	{
+	    LOG_INFO("Trajectory interrupted");
+	}
+	follower_.stop();
+      }
+      else
+      {
+        LOG_WARN("Robot has hung.");
+        res.error_code = -100;
+        res.error_string = "Robot has hung. ";
+        curr_gh_.setAborted(res, res.error_string);	
+        
+        if (kill_on_hang_)
+        {
+          LOG_ERROR("Preparing to kill the robot driver. Note that the driver "
+                    "can recover if it is configured to automatically respawn.");
 
-    has_goal_ = false;
-    lk.unlock();
+          ros::Duration(0.25).sleep();
+          exit(0);
+        }
+      }
+      
+      has_goal_ = false;
+      lk.unlock();
+    }
   }
 }
+
+bool ActionServer::reachedGoal(const TrajectoryPoint& goal_point)
+{
+  // Pick a smaller tolerance than we're likely to use at a higher level
+  const double tolerance = 0.0025;
+  // Check to see if the joint angles are close to the goal
+  for (size_t i = 0; i < q_actual_.size(); ++i)
+  {
+    if (std::abs(q_actual_[i] - goal_point.positions[i]) > tolerance)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+  
+bool ActionServer::inMotion()
+{
+  // Check the joint velocities to see whether the robot is still in motion
+  for (auto joint_speed : qd_actual_)
+  {
+    // TODO: The threshold value here is just a guess. It should be replaced
+    //       with a more realistic value based on the specs/performance of
+    //       the robot.
+    if (std::abs(joint_speed) > 0.01)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+

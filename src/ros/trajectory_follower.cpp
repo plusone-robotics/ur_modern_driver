@@ -81,15 +81,17 @@ TrajectoryFollower::TrajectoryFollower(URCommander &commander, std::string &reve
   : running_(false)
   , commander_(commander)
   , server_(reverse_port)
+  , reverse_ip_(reverse_ip)
+  , reverse_port_(reverse_port)
   , servoj_time_(0.008)
   , servoj_lookahead_time_(0.03)
   , servoj_gain_(300.)
-  , reverse_ip_(reverse_ip)
-  , reverse_port_(reverse_port)
+  , max_acceleration_(4.0 * M_PI)
 {
   ros::param::get("~servoj_time", servoj_time_);
   ros::param::get("~servoj_lookahead_time", servoj_lookahead_time_);
   ros::param::get("~servoj_gain", servoj_gain_);
+  ros::param::get("~max_acceleration", max_acceleration_); 
 
   std::string res(POSITION_PROGRAM);
   res.replace(res.find(JOINT_STATE_REPLACE), JOINT_STATE_REPLACE.length(), std::to_string(MULT_JOINTSTATE_));
@@ -130,12 +132,58 @@ bool TrajectoryFollower::start()
   return (running_ = true);
 }
 
-bool TrajectoryFollower::start(const std::vector<TrajectoryPoint> &trajectory, std::atomic<bool> &interrupt)
+bool TrajectoryFollower::computeVelocityAndAccel(double dphi, double dt,
+						 double max_vel, double max_accel,
+						 double& vel, double& accel)
+{
+
+  if (dt < 1e-4)
+  {
+    // TODO: There may be a case where this calls for maximum effort, but in
+    //       many cases it may just be for two very closely spaced positions
+    vel = 1.0;
+    accel = 1.0;
+    return true;
+  }
+  // Compute velocity and acceleration for trapezoidal velocity profile which
+  // meets the target angular displacement, dphi (stop-start-stop), in the
+  // specified time, dt.
+  
+  const double min_accel = 1.0;
+  
+  // If acceleration limits aren't exceeded, use 10% accel/decel durations
+  accel = dphi / (0.09 * dt*dt);
+  if (accel > max_accel)
+  {
+    // if acceleration limit is exceeded, use the max accel
+    accel = max_accel;
+    if (accel - 4 * dphi / dt < 0)
+    {
+      // If the max accel is not sufficient to achieve the displacement set the
+      // acceleration and velocity to the max and return false
+      double min_req_accel = 4 * dphi / dt;
+      ROS_ERROR("Minimum acceleration required for move: %lf, current maximum "
+		"acceleration: %lf", min_req_accel, max_accel);
+      vel = max_vel;
+      return false;
+    }
+  }
+  else if (accel < min_accel)
+  {
+    // But don't use an accel less than a minimum
+    accel = min_accel;
+  }
+
+  // Compute the velocity for the constant velocity portion of the trapezoidal
+  // velocity profile.
+  vel = accel*dt/2.0 - std::sqrt(accel*accel*dt*dt/4.0 - accel*dphi);
+  return true;
+}
+
+bool TrajectoryFollower::startSmoothTrajectory(const std::vector<TrajectoryPoint> &trajectory)
 {
   using namespace std::chrono;
   typedef duration<double> double_seconds;
-  typedef high_resolution_clock Clock;
-  typedef Clock::time_point Time;
 
   std::string program(TRAJECTORY_PROGRAM);
   program.replace(program.find(SERVER_IP_REPLACE), SERVER_IP_REPLACE.length(), reverse_ip_);
@@ -144,11 +192,160 @@ bool TrajectoryFollower::start(const std::vector<TrajectoryPoint> &trajectory, s
   // Replace with joints
   auto total_time = 0.0;
   auto previous_point = trajectory[0];
-  auto blend_radius = 0.0; // 0.05
-  auto deceleration_rad = 1.0;
+  auto blend_radius = 0.05; // in meters
+
+  const double MAX_VELOCITY = M_PI;  // 180 deg/s (from the manual for e-series)
+
   std::ostringstream trajectory_str;
   
-  for (auto i = 0; i < trajectory.size(); ++i)
+  for (size_t i = 0; i < trajectory.size(); ++i)
+  {
+    auto point = trajectory[i];
+    if (i == 0)
+    {
+      auto duration = point.time_from_start;
+      auto duration_seconds = duration_cast<double_seconds>(duration).count();
+      auto p = point.positions;
+      trajectory_str << "  movej([" << p[0] << ", " << p[1] << ", "
+        << p[2] << ", " << p[3] << ", " << p[4] << ", " << p[5] << "], v="
+        << 1.0 << ", r=" << 0.0 << ")" << '\n';
+      previous_point = point;
+      total_time += duration_seconds;
+    }
+    else if (i == (trajectory.size() - 1))
+    {
+      auto duration = point.time_from_start - previous_point.time_from_start;
+      auto duration_seconds = duration_cast<double_seconds>(duration).count(); 
+      auto p = point.positions;
+
+      double v;
+      double a;
+      double dphi = 0;
+      auto p0 = trajectory[i-1].positions;
+      for (size_t j = 0; j < 6; ++j)
+      {
+	double da = std::abs(p[j] - p0[j]);
+	if (da > dphi)
+	{
+	  dphi = da;
+	}
+      }
+      
+      computeVelocityAndAccel(dphi, duration_seconds,
+			      MAX_VELOCITY, max_acceleration_, v, a);
+      
+      trajectory_str << "  movej([" << p[0] << ", " << p[1] << ", "
+        << p[2] << ", " << p[3] << ", " << p[4] << ", " << p[5] << "], a="
+	<< a << ", v=" << v << ", r=" << 0.0 << ")" << '\n';
+      previous_point = point;
+      total_time += duration_seconds;
+    }
+    else
+    {
+      auto duration = point.time_from_start - previous_point.time_from_start;
+      auto duration_seconds = duration_cast<double_seconds>(duration).count();
+      auto p = point.positions;
+
+      double v;
+      double a;
+      double dphi = 0;
+      auto p0 = trajectory[i-1].positions;
+      for (size_t j = 0; j < 6; ++j)
+      {
+	double da = std::abs(p[j] - p0[j]);
+	if (da > dphi)
+	{
+	  dphi = da;
+	}
+      }
+      
+      computeVelocityAndAccel(dphi, duration_seconds,
+			      MAX_VELOCITY, max_acceleration_, v, a);
+      
+      trajectory_str << "  movej([" << p[0] << ", " << p[1] << ", "
+        << p[2] << ", " << p[3] << ", " << p[4] << ", " << p[5] << "], a="
+	<< a << ", v=" << v << ", r=" << blend_radius << ")" << '\n';
+
+      previous_point = point;
+      total_time += duration_seconds;
+    }
+  }
+  trajectory_str << "  stopj(3.14)" << '\n';
+
+  program.replace(
+    program.find(TRAJECTORY_REPLACE),
+    TRAJECTORY_REPLACE.length(),
+    trajectory_str.str());
+
+  ROS_INFO_STREAM(program);
+
+  server_.bind();
+
+  commander_.uploadProg(program);
+
+  // Using a thread for the server accept() allows us to timeout the
+  // connection if it is hung, without changing the approach to use select()
+  // or poll().
+  timeout_canceled_ = false;
+  server_thread_ = std::thread(&TrajectoryFollower::serverThread, this);
+
+  ROS_INFO_STREAM("Total Trajectory Time: " << total_time);
+
+  // Check for a timeout on the server connection. The timeout will be canceled
+  // immediately if the connection can be made. The connection will hang if the
+  // robot is in local/pendant control mode.
+  ros::Time timeout = ros::Time::now() + ros::Duration(1.0);
+  while (ros::Time::now() < timeout)
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (timeout_canceled_)
+    {
+      server_thread_.join();
+      break;
+    }
+    usleep(10);
+  }
+
+  // The trajectory process is locked
+  if (!timeout_canceled_)
+  {
+    ROS_ERROR("Trajectory execution process has hung.");
+    return false;
+  }
+  
+  return (running_ = true);
+}
+
+void TrajectoryFollower::serverThread()
+{
+  // The following server_.accept() is not strictly necessary, but without it
+  // the robot pauses for a noticeable amount of time before executing the 
+  // trajectory. With this, it executes immediately.
+  server_.accept();
+  // If accept() returns, then we can just return, but first make sure that the
+  // timeout has been canceled.
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    timeout_canceled_ = true;
+  }
+}
+
+bool TrajectoryFollower::startTimedTrajectory(const std::vector<TrajectoryPoint> &trajectory)
+{
+  using namespace std::chrono;
+  typedef duration<double> double_seconds;
+
+  std::string program(TRAJECTORY_PROGRAM);
+  program.replace(program.find(SERVER_IP_REPLACE), SERVER_IP_REPLACE.length(), reverse_ip_);
+  program.replace(program.find(SERVER_PORT_REPLACE), SERVER_PORT_REPLACE.length(), std::to_string(reverse_port_));
+
+  // Replace with joints
+  auto total_time = 0.0;
+  auto previous_point = trajectory[0];
+  auto blend_radius = 0.0;  // blend_radius doesn't do anything in a timed trajectory
+  std::ostringstream trajectory_str;
+  
+  for (size_t i = 0; i < trajectory.size(); ++i)
   {
     auto point = trajectory[i];
     if (i == 0)
@@ -190,20 +387,52 @@ bool TrajectoryFollower::start(const std::vector<TrajectoryPoint> &trajectory, s
   }
   trajectory_str << "  stopj(3.14)" << '\n';
 
-  program.replace(program.find(TRAJECTORY_REPLACE), TRAJECTORY_REPLACE.length(), trajectory_str.str());
+  program.replace(
+    program.find(TRAJECTORY_REPLACE),
+    TRAJECTORY_REPLACE.length(),
+    trajectory_str.str());
 
-  ROS_ERROR_STREAM(program);
+  ROS_INFO_STREAM(program);
 
   server_.bind();
+
   commander_.uploadProg(program);
-  server_.accept();
 
-  ROS_ERROR_STREAM("Total Trajectory Time: " << total_time);
+  // Using a thread for the server accept() allows us to timeout the
+  // connection if it is hung, without changing the approach to use select()
+  // or poll().
+  timeout_canceled_ = false;
+  server_thread_ = std::thread(&TrajectoryFollower::serverThread, this);
 
-  std::this_thread::sleep_for(std::chrono::milliseconds((int)((1.05 * total_time * 1000))));
+  ROS_INFO_STREAM("Total Trajectory Time: " << total_time);
+
+  // Check for a timeout on the server connection. The timeout will be canceled
+  // immediately if the connection can be made. The connection will hang if the
+  // robot is in local/pendant control mode.
+  ros::Time timeout = ros::Time::now() + ros::Duration(1.0);
+  while (ros::Time::now() < timeout)
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (timeout_canceled_)
+    {
+      server_thread_.join();
+      break;
+    }
+    usleep(10);
+  }
+
+  // The trajectory process is locked
+  if (!timeout_canceled_)
+  {
+    ROS_ERROR("Trajectory execution process has hung.");
+    return false;
+  }
+  
+  ros::Duration(total_time * 1.05).sleep();
   
   return (running_ = true);
 }
+
 
 bool TrajectoryFollower::execute(std::array<double, 6> &positions, bool keep_alive)
 {

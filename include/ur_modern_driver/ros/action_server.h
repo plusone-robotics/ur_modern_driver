@@ -42,6 +42,8 @@ private:
   TrajectoryFollower& follower_;
 
   RobotState state_;
+  bool use_smooth_trajectory_;
+  bool kill_on_hang_;
   std::array<double, 6> q_actual_, qd_actual_;
 
   void onGoal(GoalHandle gh);
@@ -59,6 +61,9 @@ private:
 
   void trajectoryThread();
   bool updateState(RTShared& data);
+
+  bool reachedGoal(const TrajectoryPoint& goal_point);
+  bool inMotion();
 
 public:
   ActionServer(TrajectoryFollower& follower, std::vector<std::string>& joint_names, double max_velocity);

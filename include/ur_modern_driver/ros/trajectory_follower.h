@@ -7,6 +7,7 @@
 #include <cstring>
 #include <string>
 #include <thread>
+#include <mutex>
 #include <vector>
 #include "ur_modern_driver/log.h"
 #include "ur_modern_driver/ur/commander.h"
@@ -39,7 +40,12 @@ private:
   int reverse_port_;
 
   double servoj_time_, servoj_lookahead_time_, servoj_gain_;
+  double max_acceleration_;
   std::string program_;
+
+  std::mutex mutex_;
+  std::thread server_thread_;
+  bool timeout_canceled_;
 
   template <typename T>
   size_t append(uint8_t *buffer, T &val)
@@ -49,14 +55,19 @@ private:
     return s;
   }
 
+  void serverThread();
   bool execute(std::array<double, 6> &positions, bool keep_alive);
   double interpolate(double t, double T, double p0_pos, double p1_pos, double p0_vel, double p1_vel);
+  bool computeVelocityAndAccel(double dphi, double dt,
+			       double max_vel, double max_accel,
+			       double& vel, double& accel);
 
 public:
   TrajectoryFollower(URCommander &commander, std::string &reverse_ip, int reverse_port, bool version_3);
 
   bool start();
-  bool start(const std::vector<TrajectoryPoint> &trajectory, std::atomic<bool> &interrupt);
+  bool startSmoothTrajectory(const std::vector<TrajectoryPoint> &trajectory);
+  bool startTimedTrajectory(const std::vector<TrajectoryPoint> &trajectory);
   bool execute(std::array<double, 6> &positions);
   bool execute(std::vector<TrajectoryPoint> &trajectory, std::atomic<bool> &interrupt);
   void stop();
