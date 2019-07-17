@@ -91,6 +91,7 @@ void TCPSocket::close()
     return;
   state_ = SocketState::Closed;
   ::shutdown(socket_fd_, SHUT_RDWR);
+  ::close(socket_fd_);
   socket_fd_ = -1;
 }
 
